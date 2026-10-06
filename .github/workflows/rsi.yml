@@ -2,8 +2,8 @@ name: Alerta RSI
 
 on:
   schedule:
-    # Minuto 2 de cada hora (para timeframe 1h). Ver tabla de otros timeframes.
-    - cron: "2 * * * *"
+    # Minutos 2, 17, 32 y 47 de cada hora (timeframe 15m)
+    - cron: "2,17,32,47 * * * *"
   workflow_dispatch:
     inputs:
       prueba:
@@ -25,8 +25,8 @@ jobs:
 
       - name: Revisar RSI
         env:
-          SIMBOLO: "RAYUSDT"
-          TIMEFRAME: "1h"
+          SIMBOLOS: "RAYUSDT,RENDERUSDT,BTCUSDT"
+          TIMEFRAME: "15m"
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           PRUEBA: ${{ github.event.inputs.prueba || 'false' }}
         run: python alerta_rsi_nube.py
