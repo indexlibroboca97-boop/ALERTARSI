@@ -1,0 +1,32 @@
+name: Alerta RSI
+
+on:
+  schedule:
+    # Minuto 2 de cada hora (para timeframe 1h). Ver tabla de otros timeframes.
+    - cron: "2 * * * *"
+  workflow_dispatch:
+    inputs:
+      prueba:
+        description: "Enviar notificación de prueba"
+        type: boolean
+        default: true
+
+jobs:
+  rsi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Revisar RSI
+        env:
+          SIMBOLO: "RAYUSDT"
+          TIMEFRAME: "1h"
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PRUEBA: ${{ github.event.inputs.prueba || 'false' }}
+        run: python alerta_rsi_nube.py
