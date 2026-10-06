@@ -1,32 +1,118 @@
-name: Alerta RSI
+"""
+Alerta RSI 70/30 para correr en GitHub Actions (una revisión por ejecución).
+Soporta varias monedas. La configuración viene de variables de entorno (ver rsi.yml).
+"""
 
-on:
-  schedule:
-    # Minutos 2, 17, 32 y 47 de cada hora (timeframe 15m)
-    - cron: "2,17,32,47 * * * *"
-  workflow_dispatch:
-    inputs:
-      prueba:
-        description: "Enviar notificación de prueba"
-        type: boolean
-        default: true
+import os
+import sys
 
-jobs:
-  rsi:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+import requests
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+SIMBOLOS = [s.strip().upper() for s in os.environ.get("SIMBOLOS", "RAYUSDT").split(",") if s.strip()]
+TIMEFRAME = os.environ.get("TIMEFRAME", "15m")
+RSI_LEN = int(os.environ.get("RSI_LEN", "14"))
+SOBRECOMPRA = float(os.environ.get("SOBRECOMPRA", "70"))
+SOBREVENTA = float(os.environ.get("SOBREVENTA", "30"))
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+PRUEBA = os.environ.get("PRUEBA", "false").lower() == "true"
 
-      - run: pip install requests
+# Endpoint de datos públicos de Binance (suele funcionar desde servidores en EE.UU.)
+URLS = [
+    "https://data-api.binance.vision/api/v3/klines",
+    "https://api.binance.com/api/v3/klines",
+]
 
-      - name: Revisar RSI
-        env:
-          SIMBOLOS: "RAYUSDT,RENDERUSDT,BTCUSDT"
-          TIMEFRAME: "15m"
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          PRUEBA: ${{ github.event.inputs.prueba || 'false' }}
-        run: python alerta_rsi_nube.py
+
+def velas_cerradas(simbolo):
+    ultimo_error = None
+    for url in URLS:
+        try:
+            r = requests.get(
+                url,
+                params={"symbol": simbolo, "interval": TIMEFRAME, "limit": 500},
+                timeout=20,
+            )
+            r.raise_for_status()
+            datos = r.json()[:-1]  # solo velas cerradas
+            return [float(v[4]) for v in datos]
+        except Exception as e:
+            ultimo_error = e
+            print(f"Falló {url} ({simbolo}): {e}")
+    raise RuntimeError(f"No se pudo obtener datos de {simbolo}: {ultimo_error}")
+
+
+def calcular_rsi(cierres, n=RSI_LEN):
+    """RSI de Wilder (RMA), igual que ta.rsi de TradingView."""
+    cambios = [cierres[i] - cierres[i - 1] for i in range(1, len(cierres))]
+    subidas = [max(c, 0) for c in cambios]
+    bajadas = [max(-c, 0) for c in cambios]
+
+    up = sum(subidas[:n]) / n
+    down = sum(bajadas[:n]) / n
+
+    def valor(u, d):
+        if d == 0:
+            return 100.0
+        if u == 0:
+            return 0.0
+        return 100 - 100 / (1 + u / d)
+
+    rsi = [valor(up, down)]
+    for i in range(n, len(cambios)):
+        up = (up * (n - 1) + subidas[i]) / n
+        down = (down * (n - 1) + bajadas[i]) / n
+        rsi.append(valor(up, down))
+    return rsi
+
+
+def avisar(titulo, mensaje):
+    print(titulo, "|", mensaje)
+    if not NTFY_TOPIC:
+        print("Falta NTFY_TOPIC: no se envió notificación.")
+        return
+    requests.post(
+        f"https://ntfy.sh/{NTFY_TOPIC}",
+        data=mensaje.encode("utf-8"),
+        headers={"Title": titulo.encode("utf-8"), "Priority": "high"},
+        timeout=20,
+    )
+
+
+def revisar(simbolo):
+    cierres = velas_cerradas(simbolo)
+    rsi = calcular_rsi(cierres)
+    actual, previo = rsi[-1], rsi[-2]
+    print(f"{simbolo} {TIMEFRAME} | RSI previo: {previo:.1f} | RSI actual: {actual:.1f}")
+
+    if PRUEBA:
+        avisar(
+            f"PRUEBA RSI {simbolo}",
+            f"Funciona. TF {TIMEFRAME} | RSI actual: {actual:.1f} | Precio: {cierres[-1]}",
+        )
+
+    if actual > SOBRECOMPRA and previo <= SOBRECOMPRA:
+        avisar(
+            f"RSI SOBRECOMPRA {simbolo}",
+            f"TF {TIMEFRAME} | RSI: {actual:.1f} | Precio: {cierres[-1]}",
+        )
+    elif actual < SOBREVENTA and previo >= SOBREVENTA:
+        avisar(
+            f"RSI SOBREVENTA {simbolo}",
+            f"TF {TIMEFRAME} | RSI: {actual:.1f} | Precio: {cierres[-1]}",
+        )
+
+
+def main():
+    hubo_error = False
+    for simbolo in SIMBOLOS:
+        try:
+            revisar(simbolo)
+        except Exception as e:
+            hubo_error = True
+            print(f"Error con {simbolo}: {e}")
+    if hubo_error:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
